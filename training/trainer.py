@@ -1,0 +1,488 @@
+import os
+import numpy as np
+import torch
+from dotmap import DotMap
+from model import loss_type
+from torch.utils.tensorboard.writer import SummaryWriter
+from torchinfo import summary
+import tqdm
+from utils import util
+import matplotlib.pyplot as plt
+
+
+class Trainer:
+    def __init__(self, args, cfg, data_module, network, renderer):
+        super().__init__()
+
+        gpu_id = list(map(int, args.gpu_id.split()))
+        self.device = util.get_cuda(gpu_id[0])
+
+        self.data_module = data_module
+        self.network = network.to(self.device)
+        self.renderer = renderer.to(self.device)
+        self.renderer_par = self.renderer.parallelize(self.network, gpu_id).eval()
+
+        self.setup_training(args, cfg)
+
+    def setup_training(self, args, cfg):
+        # torch.autograd.set_detect_anomaly(True)
+        self.data_module.load_dataset(
+            "train",
+            args.data_path,
+            use_data_augmentation=cfg["use_data_augmentation"],
+        )
+        self.train_dataloader = self.data_module.get_dataloader()
+
+        self.data_module.load_dataset("val", args.data_path)
+        self.val_dataloader = self.data_module.get_dataloader()
+
+        self.vis_data_iter = self.data_loop(self.val_dataloader)
+
+        self.num_total_batches = len(
+            self.train_dataloader.dataset
+        )  # object number of training set - ON
+
+        # get scene range of the dataset
+        self.z_near = self.train_dataloader.dataset.z_near
+        self.z_far = self.train_dataloader.dataset.z_far
+
+        # whether train encoder
+        self.network.stop_encoder_grad = cfg["freeze_encoder"]
+        if self.network.stop_encoder_grad:
+            self.network.encoder.eval()
+
+        self.config_loss(cfg["loss"])
+        self.config_optimizer(cfg["optimizer"])
+
+        self.nviews = cfg["nviews"]
+        self.num_epoch_repeats = cfg["num_epoch_repeats"]
+        self.num_epochs = cfg["num_epochs"]
+        self.tracking_metric = cfg["tracking_metric"]
+        self.ray_batch_size = cfg["ray_batch_size"]
+
+        self.global_step = 0
+        self.last_epoch_idx = 0
+
+        self.print_interval = args.print_interval
+        self.save_interval = args.save_interval
+        self.vis_interval = args.vis_interval
+        self.vis_repeat = args.vis_repeat
+
+        self.log_path = os.path.join(args.logs_path, args.exp_name)
+        self.ckpt_path = os.path.join(self.log_path, args.checkpoints_path)
+        self.last_ckpt = os.path.join(self.ckpt_path, "last.ckpt")
+        self.best_ckpt = os.path.join(self.ckpt_path, "best.ckpt")
+        self.writer = SummaryWriter(self.log_path)
+
+        # set initial performance value
+        if self.tracking_metric == "min":
+            self.best_performance = np.inf
+        elif self.tracking_metric == "max":
+            self.best_performance = 0.0
+
+        if os.path.exists(self.last_ckpt) and args.resume:
+            self.load_state()
+
+    def config_loss(self, cfg):
+        print("configure loss function \n")
+        self.loss_type = cfg["loss_type"]
+        self.rgb_loss_type = cfg["rgb_loss_type"]
+        self.use_reprojection_loss = cfg["use_reprojection_loss"]
+
+        # main loss function either pure RGB loss or with uncertainty/confidence estimation
+        if self.loss_type == "uncertainty":
+            self.rgb_crit = loss_type.RGBWithUncertaintyLoss(self.rgb_loss_type)
+        elif self.loss_type == "logit":
+            self.rgb_crit = loss_type.LogitWithUncertaintyLoss()
+        elif self.loss_type == "confidence":
+            self.rgb_crit = loss_type.RGBWithConfidenceLoss(la=0.1)
+        else:
+            self.rgb_crit = loss_type.RGBLoss(self.rgb_loss_type)
+
+        if self.use_reprojection_loss:
+            self.reprojection_crit = loss_type.ReprojectionLoss("l1")
+            self.reprojection_loss_weight = cfg["reprojection_loss_weight"]
+
+    def config_optimizer(self, cfg):
+        print("configure optimizer \n")
+        lr = cfg["learning_rate"]
+
+        gamma = cfg["gamma"]
+
+        if self.renderer.is_trainable:
+            params = list(self.network.parameters()) + list(self.renderer.parameters())
+        else:
+            params = self.network.parameters()
+
+        self.optimizer = torch.optim.Adam(params, lr=lr)
+
+        self.lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer=self.optimizer, gamma=gamma
+        )
+
+    def load_state(self):
+        print("loading checkpoint \n")
+        checkpoint = torch.load(self.last_ckpt)
+        self.network.load_state_dict(checkpoint["network_state_dict"])
+        self.renderer.load_state_dict(checkpoint["renderer_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.lr_scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        self.global_step = checkpoint["global_step"]
+        self.last_epoch_idx = checkpoint["epoch"]
+        self.best_performance = checkpoint["best_performance"]
+
+    def sanity_check(self):
+        print("----------sanity check---------- \n")
+        summary(self.network)
+        summary(self.renderer)
+
+        with torch.no_grad():
+            self.network.eval()
+            self.renderer.eval()
+            self.val_stats = []
+
+            for data in self.val_dataloader:
+                self.validation_step(data)
+
+            _ = self.validation_epoch_end()
+            self.visualization_step(next(self.vis_data_iter))
+
+    def start(self):
+        self.sanity_check()
+
+        print("----------start training---------- \n")
+
+        for epoch in range(self.last_epoch_idx, self.num_epochs):
+            print(f"\n----------epoch {epoch}---------- \n")
+            train_progress = tqdm.tqdm(
+                total=len(self.train_dataloader) * self.num_epoch_repeats,
+                desc="Training",
+            )
+            val_progress = tqdm.tqdm(
+                total=len(self.val_dataloader),
+                desc="Validation",
+            )
+
+            self.epoch = epoch
+            self.val_stats = []
+
+            self.network.train()
+            self.renderer.train()
+            for _ in range(self.num_epoch_repeats):
+                for data in self.train_dataloader:
+                    self.training_step(data)
+                    train_progress.update()
+
+            self.network.eval()
+            self.renderer.eval()
+            for data in self.val_dataloader:
+                self.validation_step(data)
+                val_progress.update()
+
+            val_performance = self.validation_epoch_end()
+
+            if epoch % self.vis_interval == 0:
+                self.visualization_step(next(self.vis_data_iter))
+
+            self.lr_scheduler.step()
+
+            # save last and best checkpoints
+            if epoch % self.save_interval == 0:
+                ckpt_state_dict = {
+                    "epoch": epoch + 1,
+                    "global_step": self.global_step + 1,
+                    "best_performance": val_performance,
+                    "network_state_dict": self.network.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                    "scheduler_state_dict": self.lr_scheduler.state_dict(),
+                    "renderer_state_dict": self.renderer.state_dict(),
+                }
+
+                torch.save(ckpt_state_dict, self.last_ckpt)
+
+                if (
+                    self.tracking_metric == "min"
+                    and val_performance < self.best_performance
+                ):
+                    self.best_performance = val_performance
+                    torch.save(ckpt_state_dict, self.best_ckpt)
+                elif (
+                    self.tracking_metric == "max"
+                    and val_performance > self.best_performance
+                ):
+                    self.best_performance = val_performance
+                    torch.save(ckpt_state_dict, self.best_ckpt)
+
+            train_progress.close()
+            val_progress.close()
+
+    def training_step(self, data):
+        # with torch.autograd.detect_anomaly():
+        self.loss = None
+        self.optimizer.zero_grad()
+        self.loss = self.calc_loss(data)
+        self.loss.backward()
+        self.optimizer.step()
+
+        if self.global_step % self.print_interval == 0:
+            self.print_training_progress()
+
+        self.global_step += 1
+
+    def print_training_progress(self):
+        self.writer.add_scalar("Loss/train", self.loss, self.global_step)
+        self.writer.add_scalar(
+            "Training_Status/learning_rate",
+            self.lr_scheduler.get_last_lr()[0],
+            self.global_step,
+        )
+
+        encoder_grad_norm = 0
+        for params in self.network.encoder.parameters():
+            if params.grad is not None:
+                encoder_grad_norm += params.grad.data.norm(2).item()
+        self.writer.add_scalar(
+            "Training_Status/encoder_gradient_norm",
+            encoder_grad_norm,
+            self.global_step,
+        )
+
+        renderer_grad_norm = 0
+        for params in self.renderer.parameters():
+            if params.grad is not None:
+                renderer_grad_norm += params.grad.data.norm(2).item()
+        self.writer.add_scalar(
+            "Training_Status/renderer_gradient_norm",
+            renderer_grad_norm,
+            self.global_step,
+        )
+
+        mlp_feature_grad_norm = 0
+        for params in self.network.mlp_feature.parameters():
+            if params.grad is not None:
+                mlp_feature_grad_norm += params.grad.data.norm(2).item()
+        self.writer.add_scalar(
+            "Training_Status/mlp_feature_gradient_norm",
+            mlp_feature_grad_norm,
+            self.global_step,
+        )
+
+        mlp_out_grad_norm = 0
+        for params in self.network.mlp_out.parameters():
+            if params.grad is not None:
+                mlp_out_grad_norm += params.grad.data.norm(2).item()
+        self.writer.add_scalar(
+            "Training_Status/mlp_out_gradient_norm",
+            mlp_out_grad_norm,
+            self.global_step,
+        )
+
+    def validation_step(self, data):
+        with torch.no_grad():
+            val_loss = self.calc_loss(data)
+            stats = {"val_loss": val_loss.item()}
+            self.val_stats.append(stats)
+
+    def validation_epoch_end(self):
+        loss = np.mean([tmp["val_loss"] for tmp in self.val_stats])
+        self.writer.add_scalar("Loss/validation", loss, self.global_step)
+        return loss
+
+    def visualization_step(self, data):
+        obj_id = np.random.randint(
+            0, data["images"].shape[0]
+        )  # pick one object to visualize
+        images = data["images"][obj_id].to(self.device)  # (IN, 3, H, W)
+        poses = data["poses"][obj_id].to(self.device)  # (IN, 4, 4)
+        focal = data["focal"][obj_id : obj_id + 1].to(self.device)  # (1, 2)
+        c = data["c"][obj_id : obj_id + 1].to(self.device)  # (1, 2)
+        IN, _, H, W = images.shape
+
+        cam_rays = util.gen_rays(
+            poses, W, H, focal, self.z_near, self.z_far, c=c
+        )  # (IN, H, W, 8)
+        images_0to1 = images * 0.5 + 0.5  # (IN, 3, H, W)
+
+        # randomly select source views and target view
+        view_tar = np.random.choice(IN, 1)[0]
+        gt = images_0to1[view_tar].permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
+
+        # remove target view from reference candidates
+        images_index = np.arange(IN)
+        images_index = images_index[images_index != view_tar]
+
+        self.writer.add_image(
+            "ground truth", (gt * 255).astype(np.uint8), 0, dataformats="HWC"
+        )
+        psnr_list = []
+        ssim_list = []
+        mse_list = []
+        var_list = []
+        log_var_list = []
+
+        for i in range(self.vis_repeat):
+            ref_nviews = self.nviews[torch.randint(0, len(self.nviews), (1,)).item()]
+            views_src = np.random.choice(images_index, ref_nviews, replace=False)
+            source_views = (
+                images_0to1[views_src]
+                .permute(0, 2, 3, 1)
+                .cpu()
+                .numpy()
+                .reshape(-1, H, W, 3)
+            )
+            self.writer.add_images(
+                "source views",
+                (source_views * 255).astype(np.uint8),
+                global_step=i,
+                dataformats="NHWC",
+            )
+
+            with torch.no_grad():
+                target_rays = cam_rays[view_tar]  # (H, W, 8)
+                self.network.encode(
+                    images[views_src].unsqueeze(0),
+                    poses[views_src].unsqueeze(0),
+                    focal,
+                    c=c if c is not None else None,
+                )
+
+                target_rays = target_rays.reshape(1, H * W, -1)
+
+                predict = DotMap(self.renderer_par(target_rays))
+                util.tb_visualizer(predict, gt, self.writer, H, W, i)
+                metrics_dict = util.calc_metrics(predict, torch.tensor(gt))
+
+                mse_list.append(metrics_dict["mean_mse"])
+                var_list.append(metrics_dict["mean_variance"])
+                psnr_list.append(metrics_dict["psnr"])
+                ssim_list.append(metrics_dict["ssim"])
+                log_var_list.append(metrics_dict["log_mean_variance"])
+
+        fig, axs = plt.subplots(3, 1)
+        axs[0].scatter(np.array(mse_list), np.array(var_list))
+        axs[1].scatter(np.array(psnr_list), np.array(log_var_list))
+        axs[2].scatter(np.array(ssim_list), np.array(var_list))
+        self.writer.add_figure("calibration", fig)
+        plt.close(fig)
+
+        # pearson_mse = np.corrcoef(mse_list, var_list)[0, 1]
+        # pearson_psnr = np.corrcoef(psnr_list, log_var_list)[0, 1]
+        # pearson_ssim = np.corrcoef(ssim_list, var_list)[0, 1]
+        # print(f"calibration: {pearson_mse}, {pearson_psnr}, {pearson_ssim}")
+
+        self.writer.add_scalar(
+            "Performance/avg_psnr", np.average(psnr_list), global_step=self.global_step
+        )
+
+        self.writer.add_scalar(
+            "Performance/best_psnr", np.max(psnr_list), global_step=self.global_step
+        )
+        self.writer.add_scalar(
+            "Performance/avg_ssim", np.average(ssim_list), global_step=self.global_step
+        )
+
+        self.writer.add_scalar(
+            "Performance/best_ssim", np.max(ssim_list), global_step=self.global_step
+        )
+
+    def calc_loss(self, data):
+        # ON-object number, IN-image number, RN-reference number, H-height, W-width
+        all_images = data["images"].to(self.device)  # (ON, IN, 3, H, W)
+        all_poses = data["poses"].to(self.device)  # (ON, IN, 4, 4)
+        all_focals = data["focal"].to(self.device)  # (ON, 2)
+        all_c = data["c"].to(self.device)  # (ON, 2)
+        ON, IN, _, _, _ = all_images.shape
+
+        all_rgb_gt = []
+        all_rays = []
+
+        # randomly pick number of reference views
+        ref_nviews = self.nviews[torch.randint(0, len(self.nviews), ()).item()]
+        image_ord = torch.empty((ON, ref_nviews), dtype=torch.long)
+
+        for obj_idx in range(ON):
+            images = all_images[obj_idx]  # (IN, 3, H, W)
+            poses = all_poses[obj_idx]  # (IN, 4, 4)
+            focal = all_focals[obj_idx]
+            c = all_c[obj_idx]
+
+            ref_index = torch.from_numpy(
+                np.random.choice(IN, ref_nviews, replace=False)
+            )
+            image_ord[obj_idx] = ref_index
+
+            # generate boolean mask for filter out reference images
+            boolean_mask = np.ma.make_mask(np.ones(IN))
+            boolean_mask[ref_index] = False
+
+            H, W = images.shape[-2:]
+            images_0to1 = images * 0.5 + 0.5  # as final prediction ranges from 0 to 1
+            rgb_gt_all = images_0to1
+
+            cam_rays = util.gen_rays(
+                poses[boolean_mask], W, H, focal, self.z_near, self.z_far, c=c
+            )  # (IN-ref_nviews, H, W, 8)
+
+            rgb_gt_all = (
+                rgb_gt_all[boolean_mask].permute(0, 2, 3, 1).contiguous().reshape(-1, 3)
+            )  # ((IN-ref_nviews)*H*W, 3)
+
+            pix_inds = torch.randint(
+                0, (IN - ref_nviews) * H * W, (self.ray_batch_size,)
+            )
+            rgb_gt = rgb_gt_all[pix_inds]
+            rays = cam_rays.view(-1, cam_rays.shape[-1])[pix_inds].to(
+                self.device
+            )  # (RB, 8)
+            all_rgb_gt.append(rgb_gt)
+            all_rays.append(rays)
+
+        all_rgb_gt = torch.stack(all_rgb_gt)  # (ON, RB, 3)
+        all_rays = torch.stack(all_rays)  # (ON, RB, 8)
+
+        # randomly select reference views and poses from object images
+        image_ord = image_ord.to(self.device)
+        ref_images = util.batched_index_select_nd(
+            all_images, image_ord
+        )  # (ON, RN, 3, H, W)
+        ref_poses = util.batched_index_select_nd(all_poses, image_ord)  # (ON, RN, 4, 4)
+
+        all_poses = all_images = None  # release memory
+
+        self.network.encode(
+            ref_images,
+            ref_poses,
+            all_focals,
+            all_c,
+        )
+
+        predict = DotMap(self.renderer_par(all_rays))
+        loss = self.rgb_crit(predict, all_rgb_gt)
+
+        if self.use_reprojection_loss:
+            reprojection_loss = self.reprojection_crit(
+                all_rays, predict, ref_images, ref_poses, all_focals, all_c, all_rgb_gt
+            )
+            loss += self.reprojection_loss_weight * reprojection_loss
+
+        # negative_depth = False
+
+        # if negative_depth:
+        #     scaled_depth_pred = predict.scaled_depth
+        #     diff = torch.clamp(
+        #         scaled_depth_pred, max=0.0
+        #     )  # make it run from the negative to the 0 so if the depth is above the minimum then the loss is zero
+
+        #     loss += -diff.mean() * 10
+
+        return loss
+
+    @staticmethod
+    def data_loop(dl):
+        """
+        Loop an iterable infinitely
+        """
+
+        while True:
+            for x in iter(dl):
+                yield x

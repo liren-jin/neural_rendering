@@ -1,0 +1,23 @@
+# Editors
+.vscode/
+.idea/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.swp
+
+# Custom
+checkpoints/
+experiment/
+visuals/
+logs/
+.env
+test.py
+*.csv
+*.jpg
+*.png
+*.svg
+*.npy
+

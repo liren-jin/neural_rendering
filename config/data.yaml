@@ -1,0 +1,39 @@
+data:
+  # dtu dataset 
+  name: dtu
+  batch_size: 4
+  shuffle: true
+  num_workers: 0
+  
+  dataset:
+    max_imgs: 49
+    image_size: [300, 400] # H W
+    z_near: 0.1
+    z_far: 3.5
+    format: opencv
+
+  data_augmentation:
+    color_jitter:
+      hue_range: 0.1
+      saturation_range: 0.1
+      brightness_range: 0.1
+      contrast_range: 0.1
+  
+  # shapenet dataset 
+  # name: shapenet
+  # batch_size: 4
+  # shuffle: true
+  # num_workers: 0
+  
+  # dataset:
+  #   image_size: [200, 200] # H W
+  #   z_near: 0.1
+  #   z_far: 4.0
+  #   format: normal
+
+  # data_augmentation:
+  #   color_jitter:
+  #     hue_range: 0.1
+  #     saturation_range: 0.1
+  #     brightness_range: 0.1
+  #     contrast_range: 0.1
