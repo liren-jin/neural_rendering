@@ -200,7 +200,7 @@ class RMRenderer(nn.Module):
 
             with torch.no_grad():
                 sampled_predictions = util.get_samples(
-                    logit_mean, torch.sqrt(torch.exp(logit_log_var)), 50
+                    logit_mean, torch.sqrt(torch.exp(logit_log_var)), 100
                 )
                 rgb_mean = torch.mean(sampled_predictions, axis=0)
                 rgb_std = torch.std(sampled_predictions, axis=0)

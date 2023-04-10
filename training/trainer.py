@@ -46,7 +46,7 @@ class Trainer:
         self.z_near = self.train_dataloader.dataset.z_near
         self.z_far = self.train_dataloader.dataset.z_far
 
-        # whether train encoder
+        # whether to train encoder
         self.network.stop_encoder_grad = cfg["freeze_encoder"]
         if self.network.stop_encoder_grad:
             self.network.encoder.eval()
@@ -365,11 +365,6 @@ class Trainer:
         self.writer.add_figure("calibration", fig)
         plt.close(fig)
 
-        # pearson_mse = np.corrcoef(mse_list, var_list)[0, 1]
-        # pearson_psnr = np.corrcoef(psnr_list, log_var_list)[0, 1]
-        # pearson_ssim = np.corrcoef(ssim_list, var_list)[0, 1]
-        # print(f"calibration: {pearson_mse}, {pearson_psnr}, {pearson_ssim}")
-
         self.writer.add_scalar(
             "Performance/avg_psnr", np.average(psnr_list), global_step=self.global_step
         )
@@ -411,7 +406,7 @@ class Trainer:
             )
             image_ord[obj_idx] = ref_index
 
-            # generate boolean mask for filter out reference images
+            # generate boolean mask for filtering out reference images
             boolean_mask = np.ma.make_mask(np.ones(IN))
             boolean_mask[ref_index] = False
 
