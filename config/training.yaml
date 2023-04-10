@@ -1,6 +1,6 @@
 trainer:
   tracking_metric: min
-  num_epoch_repeats: 16
+  num_epoch_repeats: 8
   num_epochs: 1000
   ray_batch_size: 1200
   nviews: [3, 4, 5]
