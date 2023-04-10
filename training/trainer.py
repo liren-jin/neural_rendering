@@ -68,7 +68,7 @@ class Trainer:
         self.vis_interval = args.vis_interval
         self.vis_repeat = args.vis_repeat
 
-        self.log_path = os.path.join(args.logs_path, args.exp_name)
+        self.log_path = os.path.join(args.logs_path, args.model_name)
         self.ckpt_path = os.path.join(self.log_path, args.checkpoints_path)
         self.last_ckpt = os.path.join(self.ckpt_path, "last.ckpt")
         self.best_ckpt = os.path.join(self.ckpt_path, "best.ckpt")
