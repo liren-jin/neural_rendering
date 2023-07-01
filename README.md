@@ -14,9 +14,13 @@ copy lst files in lst folder to <data root>/rs_dtz_4/DTU folder
 ## Train on DTU Dataset
 for starting training process:
 ```commandline
-python training/train.py -M <model name> -D <data root>/rs_dtu_4/DTU 
+python train.py -M <model name>
+```
+continue traing:
+```commandline
+python train.py -M <model name> --resume
 ```
 visualize training progress via:
 ``` commandline
-tensorboard --logdir <project dir>/logs/<expname>
+tensorboard --logdir <project dir>/logs/<model name>
 ```
