@@ -22,12 +22,9 @@ class DTUDataModule:
         self.dataset_cfg = cfg["dataset"]
         self.data_augmentation = cfg["data_augmentation"]
 
-    def load_dataset(
-        self, mode, data_rootdir, use_data_augmentation=False, scene_list=None
-    ):
+    def load_dataset(self, mode, use_data_augmentation=False, scene_list=None):
         self.mode = mode
         self.dataset_cfg["mode"] = mode
-        self.dataset_cfg["data_rootdir"] = data_rootdir
         self.dataset_cfg["scene_list"] = scene_list
 
         if use_data_augmentation:
@@ -35,12 +32,9 @@ class DTUDataModule:
         else:
             self.dataset_cfg["transformation"] = None
 
-        self._dataset = DTUDataset.init_from_cfg(self.dataset_cfg)
+        return DTUDataset.init_from_cfg(self.dataset_cfg)
 
-    def get_dataloader(
-        self,
-    ):
-
+    def get_dataloader(self, dataset):
         batch_size = self.batch_size
         shuffle = self.shuffle
         num_workers = self.num_workers
@@ -51,7 +45,7 @@ class DTUDataModule:
             num_workers = 0
 
         dataloader = DataLoader(
-            self._dataset,
+            dataset,
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
@@ -165,7 +159,6 @@ class DTUDataset(Dataset):
 
             # camera poses in world coordinate
             pose = coordinate_transformation(pose, format=self.dataset_format)
-
             img_tensor = self.image_to_tensor(img)
             all_imgs.append(img_tensor)
             all_poses.append(pose)

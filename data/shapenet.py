@@ -23,12 +23,9 @@ class ShapenetDataModule:
         self.dataset_cfg = cfg["dataset"]
         self.data_augmentation = cfg["data_augmentation"]
 
-    def load_dataset(
-        self, mode, data_rootdir, use_data_augmentation=False, scene_list=None
-    ):
+    def load_dataset(self, mode, use_data_augmentation=False, scene_list=None):
         self.mode = mode
         self.dataset_cfg["mode"] = mode
-        self.dataset_cfg["data_rootdir"] = data_rootdir
         self.dataset_cfg["scene_list"] = scene_list
 
         if use_data_augmentation:
@@ -36,10 +33,9 @@ class ShapenetDataModule:
         else:
             self.dataset_cfg["transformation"] = None
 
-        self._dataset = ShapenetDataset.init_from_cfg(self.dataset_cfg)
+        return ShapenetDataset.init_from_cfg(self.dataset_cfg)
 
-    def get_dataloader(self):
-
+    def get_dataloader(self, dataset):
         batch_size = self.batch_size
         shuffle = self.shuffle
         num_workers = self.num_workers
@@ -50,7 +46,7 @@ class ShapenetDataModule:
             num_workers = 0
 
         dataloader = DataLoader(
-            self._dataset,
+            dataset,
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
@@ -76,7 +72,6 @@ class ShapenetDataset(Dataset):
         Args:
         mode: either train, val or test
         data_rootdir: root directory of dataset
-        max_imgs: maximal images for the object
         image_size: [H, W] pixels
         z_near: minimal distance of the object
         z_far: maximal distance of the object
@@ -85,7 +80,6 @@ class ShapenetDataset(Dataset):
         """
 
         super().__init__()
-        # self.max_imgs = max_imgs
         self.image_size = image_size
         self.z_near = z_near
         self.z_far = z_far
@@ -122,12 +116,6 @@ class ShapenetDataset(Dataset):
         ]
         rgb_paths = sorted(rgb_paths)
 
-        # if len(rgb_paths) <= self.max_imgs:
-        #     sel_indices = np.arange(len(rgb_paths))
-        # else:
-        #     sel_indices = np.random.choice(len(rgb_paths), self.max_imgs, replace=False)
-        #     rgb_paths = [rgb_paths[i] for i in sel_indices]
-
         cam_path = os.path.join(root_dir, "trajectory.npy")
         intrinsic_path = os.path.join(root_dir, "camera_info.yaml")
         all_cam = np.load(cam_path)
@@ -135,13 +123,11 @@ class ShapenetDataset(Dataset):
         all_poses = []
 
         for idx, rgb_path in enumerate(rgb_paths):
-            # i = sel_indices[idx]
             img = imageio.imread(rgb_path)[..., :3]
             pose = all_cam[idx]
 
             # camera poses in world coordinate
             pose = coordinate_transformation(pose, format=self.dataset_format)
-            # print(pose)
             img_tensor = self.image_to_tensor(img)
             all_imgs.append(img_tensor)
             all_poses.append(pose)
