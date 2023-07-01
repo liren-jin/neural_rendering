@@ -11,30 +11,55 @@ import matplotlib.pyplot as plt
 
 
 class Trainer:
-    def __init__(self, args, cfg, data_module, network, renderer):
+    def __init__(
+        self,
+        tracking_metric,
+        num_epoch_repeats,
+        num_epochs,
+        ray_batch_size,
+        nviews,
+        use_data_augmentation,
+        freeze_encoder,
+        print_interval,
+        save_interval,
+        vis_interval,
+        vis_repeat,
+        gpu_id,
+        loss_cfg,
+        optimizer_cfg,
+    ):
         super().__init__()
+        self.tracking_metric = tracking_metric
+        self.num_epoch_repeats = num_epoch_repeats
+        self.num_epochs = num_epochs
+        self.ray_batch_size = ray_batch_size
+        self.nviews = nviews
+        self.use_data_augmentation = use_data_augmentation
+        self.freeze_encoder = freeze_encoder
+        self.print_interval = print_interval
+        self.save_interval = save_interval
+        self.vis_interval = vis_interval
+        self.vis_repeat = vis_repeat
+        self.gpu_id = gpu_id
 
-        gpu_id = list(map(int, args.gpu_id.split()))
-        self.device = util.get_cuda(gpu_id[0])
+        self.loss_cfg = loss_cfg
+        self.optimizer_cfg = optimizer_cfg
 
+    def setup_training(self, data_module, network, renderer, exp_name, resume):
+        self.device = util.get_cuda(self.gpu_id[0])
         self.data_module = data_module
         self.network = network.to(self.device)
         self.renderer = renderer.to(self.device)
-        self.renderer_par = self.renderer.parallelize(self.network, gpu_id).eval()
+        self.renderer_par = self.renderer.parallelize(self.network, self.gpu_id).eval()
 
-        self.setup_training(args, cfg)
-
-    def setup_training(self, args, cfg):
-        # torch.autograd.set_detect_anomaly(True)
-        self.data_module.load_dataset(
+        train_dataset = self.data_module.load_dataset(
             "train",
-            args.data_path,
-            use_data_augmentation=cfg["use_data_augmentation"],
+            use_data_augmentation=self.use_data_augmentation,
         )
-        self.train_dataloader = self.data_module.get_dataloader()
+        self.train_dataloader = self.data_module.get_dataloader(train_dataset)
 
-        self.data_module.load_dataset("val", args.data_path)
-        self.val_dataloader = self.data_module.get_dataloader()
+        val_dataset = self.data_module.load_dataset("val")
+        self.val_dataloader = self.data_module.get_dataloader(val_dataset)
 
         self.vis_data_iter = self.data_loop(self.val_dataloader)
 
@@ -43,33 +68,22 @@ class Trainer:
         )  # object number of training set - ON
 
         # get scene range of the dataset
-        self.z_near = self.train_dataloader.dataset.z_near
-        self.z_far = self.train_dataloader.dataset.z_far
+        self.z_near = train_dataset.z_near
+        self.z_far = train_dataset.z_far
 
-        # whether to train encoder
-        self.network.stop_encoder_grad = cfg["freeze_encoder"]
+        # whether train encoder
+        self.network.stop_encoder_grad = self.freeze_encoder
         if self.network.stop_encoder_grad:
             self.network.encoder.eval()
 
-        self.config_loss(cfg["loss"])
-        self.config_optimizer(cfg["optimizer"])
-
-        self.nviews = cfg["nviews"]
-        self.num_epoch_repeats = cfg["num_epoch_repeats"]
-        self.num_epochs = cfg["num_epochs"]
-        self.tracking_metric = cfg["tracking_metric"]
-        self.ray_batch_size = cfg["ray_batch_size"]
+        self.config_loss()
+        self.config_optimizer()
 
         self.global_step = 0
         self.last_epoch_idx = 0
 
-        self.print_interval = args.print_interval
-        self.save_interval = args.save_interval
-        self.vis_interval = args.vis_interval
-        self.vis_repeat = args.vis_repeat
-
-        self.log_path = os.path.join(args.logs_path, args.model_name)
-        self.ckpt_path = os.path.join(self.log_path, args.checkpoints_path)
+        self.log_path = os.path.join("logs", exp_name)
+        self.ckpt_path = os.path.join(self.log_path, "checkpoints")
         self.last_ckpt = os.path.join(self.ckpt_path, "last.ckpt")
         self.best_ckpt = os.path.join(self.ckpt_path, "best.ckpt")
         self.writer = SummaryWriter(self.log_path)
@@ -80,34 +94,25 @@ class Trainer:
         elif self.tracking_metric == "max":
             self.best_performance = 0.0
 
-        if os.path.exists(self.last_ckpt) and args.resume:
+        if os.path.exists(self.last_ckpt) and resume:
             self.load_state()
 
-    def config_loss(self, cfg):
+    def config_loss(self):
         print("configure loss function \n")
-        self.loss_type = cfg["loss_type"]
-        self.rgb_loss_type = cfg["rgb_loss_type"]
-        self.use_reprojection_loss = cfg["use_reprojection_loss"]
+        _loss_type = self.loss_cfg["loss_type"]
+        _rgb_loss_type = self.loss_cfg["rgb_loss_type"]
 
-        # main loss function either pure RGB loss or with uncertainty/confidence estimation
-        if self.loss_type == "uncertainty":
-            self.rgb_crit = loss_type.RGBWithUncertaintyLoss(self.rgb_loss_type)
-        elif self.loss_type == "logit":
-            self.rgb_crit = loss_type.LogitWithUncertaintyLoss()
-        elif self.loss_type == "confidence":
-            self.rgb_crit = loss_type.RGBWithConfidenceLoss(la=0.1)
+        if _loss_type == "logit":
+            self.rgb_crit = loss_type.LogitWithUncertaintyLoss(_rgb_loss_type)
+        elif _loss_type == "rgb":
+            self.rgb_crit = loss_type.RGBLoss(_rgb_loss_type)
         else:
-            self.rgb_crit = loss_type.RGBLoss(self.rgb_loss_type)
+            RuntimeError("loss type not defined!")
 
-        if self.use_reprojection_loss:
-            self.reprojection_crit = loss_type.ReprojectionLoss("l1")
-            self.reprojection_loss_weight = cfg["reprojection_loss_weight"]
-
-    def config_optimizer(self, cfg):
+    def config_optimizer(self):
         print("configure optimizer \n")
-        lr = cfg["learning_rate"]
-
-        gamma = cfg["gamma"]
+        lr = self.optimizer_cfg["learning_rate"]
+        gamma = self.optimizer_cfg["gamma"]
 
         if self.renderer.is_trainable:
             params = list(self.network.parameters()) + list(self.renderer.parameters())
@@ -141,11 +146,10 @@ class Trainer:
             self.renderer.eval()
             self.val_stats = []
 
-            for data in self.val_dataloader:
-                self.validation_step(data)
-
+            test_data = next(self.vis_data_iter)
+            self.validation_step(test_data)
             _ = self.validation_epoch_end()
-            self.visualization_step(next(self.vis_data_iter))
+            self.visualization_step(test_data)
 
     def start(self):
         self.sanity_check()
@@ -193,9 +197,9 @@ class Trainer:
                     "global_step": self.global_step + 1,
                     "best_performance": val_performance,
                     "network_state_dict": self.network.state_dict(),
+                    "renderer_state_dict": self.renderer.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "scheduler_state_dict": self.lr_scheduler.state_dict(),
-                    "renderer_state_dict": self.renderer.state_dict(),
                 }
 
                 torch.save(ckpt_state_dict, self.last_ckpt)
@@ -217,7 +221,6 @@ class Trainer:
             val_progress.close()
 
     def training_step(self, data):
-        # with torch.autograd.detect_anomaly():
         self.loss = None
         self.optimizer.zero_grad()
         self.loss = self.calc_loss(data)
@@ -349,7 +352,9 @@ class Trainer:
                 target_rays = target_rays.reshape(1, H * W, -1)
 
                 predict = DotMap(self.renderer_par(target_rays))
-                util.tb_visualizer(predict, gt, self.writer, H, W, i)
+                util.tb_visualizer(
+                    predict, gt, self.writer, H, W, self.z_near, self.z_far, i
+                )
                 metrics_dict = util.calc_metrics(predict, torch.tensor(gt))
 
                 mse_list.append(metrics_dict["mean_mse"])
@@ -382,8 +387,8 @@ class Trainer:
 
     def calc_loss(self, data):
         # ON-object number, IN-image number, RN-reference number, H-height, W-width
-        all_images = data["images"].to(self.device)  # (ON, IN, 3, H, W)
-        all_poses = data["poses"].to(self.device)  # (ON, IN, 4, 4)
+        all_images = data["images"]  # (ON, IN, 3, H, W)
+        all_poses = data["poses"]  # (ON, IN, 4, 4)
         all_focals = data["focal"].to(self.device)  # (ON, 2)
         all_c = data["c"].to(self.device)  # (ON, 2)
         ON, IN, _, _, _ = all_images.shape
@@ -425,7 +430,7 @@ class Trainer:
             pix_inds = torch.randint(
                 0, (IN - ref_nviews) * H * W, (self.ray_batch_size,)
             )
-            rgb_gt = rgb_gt_all[pix_inds]
+            rgb_gt = rgb_gt_all[pix_inds].to(self.device)
             rays = cam_rays.view(-1, cam_rays.shape[-1])[pix_inds].to(
                 self.device
             )  # (RB, 8)
@@ -436,11 +441,12 @@ class Trainer:
         all_rays = torch.stack(all_rays)  # (ON, RB, 8)
 
         # randomly select reference views and poses from object images
-        image_ord = image_ord.to(self.device)
-        ref_images = util.batched_index_select_nd(
-            all_images, image_ord
+        ref_images = util.batched_index_select_nd(all_images, image_ord).to(
+            self.device
         )  # (ON, RN, 3, H, W)
-        ref_poses = util.batched_index_select_nd(all_poses, image_ord)  # (ON, RN, 4, 4)
+        ref_poses = util.batched_index_select_nd(all_poses, image_ord).to(
+            self.device
+        )  # (ON, RN, 4, 4)
 
         all_poses = all_images = None  # release memory
 
@@ -454,22 +460,6 @@ class Trainer:
         predict = DotMap(self.renderer_par(all_rays))
         loss = self.rgb_crit(predict, all_rgb_gt)
 
-        if self.use_reprojection_loss:
-            reprojection_loss = self.reprojection_crit(
-                all_rays, predict, ref_images, ref_poses, all_focals, all_c, all_rgb_gt
-            )
-            loss += self.reprojection_loss_weight * reprojection_loss
-
-        # negative_depth = False
-
-        # if negative_depth:
-        #     scaled_depth_pred = predict.scaled_depth
-        #     diff = torch.clamp(
-        #         scaled_depth_pred, max=0.0
-        #     )  # make it run from the negative to the 0 so if the depth is above the minimum then the loss is zero
-
-        #     loss += -diff.mean() * 10
-
         return loss
 
     @staticmethod
@@ -481,3 +471,22 @@ class Trainer:
         while True:
             for x in iter(dl):
                 yield x
+
+    @classmethod
+    def init_from_cfg(cls, cfg):
+        return cls(
+            tracking_metric=cfg["tracking_metric"],
+            num_epoch_repeats=cfg["num_epoch_repeats"],
+            num_epochs=cfg["num_epochs"],
+            ray_batch_size=cfg["ray_batch_size"],
+            nviews=cfg["nviews"],
+            use_data_augmentation=cfg["use_data_augmentation"],
+            freeze_encoder=cfg["freeze_encoder"],
+            print_interval=cfg["print_interval"],
+            save_interval=cfg["save_interval"],
+            vis_interval=cfg["vis_interval"],
+            vis_repeat=cfg["vis_repeat"],
+            gpu_id=cfg["gpu_id"],
+            loss_cfg=cfg["loss"],
+            optimizer_cfg=cfg["optimizer"],
+        )
