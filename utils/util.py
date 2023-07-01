@@ -10,43 +10,13 @@ import torchmetrics
 import torch.nn.functional as F
 
 
-def image_float_to_uint8_norm(img):
+def image_float_to_uint8_norm(img, min, max):
     """
-    Convert a float image (0.0-1.0) to uint8 (0-255)
+    Convert a float image (min-max) to uint8 (0-255)
     """
-    vmin = 0
-    vmax = 0.5
-    # if vmax - vmin < 1e-10:
-    #     vmax += 1e-10
-    img = (img - vmin) / (vmax - vmin)
+    img = (img - min) / (max - min)
     img *= 255.0
-    return img.astype(np.uint8)
-
-
-def image_float_to_uint8_norm_error(img):
-    """
-    Convert a float image (0.0-1.0) to uint8 (0-255)
-    """
-    vmin = 0
-    vmax = 1.0
-    # if vmax - vmin < 1e-10:
-    #     vmax += 1e-10
-    img = (img - vmin) / (vmax - vmin)
-    img *= 255.0
-    return img.astype(np.uint8)
-
-
-# for test only
-def image_float_to_uint8_depth(img):
-    """
-    Convert a float image (0.0-1.0) to uint8 (0-255)
-    """
-    vmin = 0.1
-    vmax = 3.5
-    # if vmax - vmin < 1e-10:
-    #     vmax += 1e-10
-    img = (img - vmin) / (vmax - vmin)
-    img *= 255.0
+    img = np.clip(img, a_min=0.0, a_max=255.0)
     return img.astype(np.uint8)
 
 
@@ -59,77 +29,24 @@ def image_float_to_uint8(img):
     return img.astype(np.uint8)
 
 
-# def depth_float_to_uint8(img):
-#     """
-#     Convert a float image (0.0-1.0) to uint8 (0-255)
-#     """
-#     vmin = 0
-#     vmax = 5.0
-#     img = (img - vmin) / (vmax - vmin)
-#     img *= 255.0
-#     return img.astype(np.uint8)
-
-
-def color_threshold(img):
-    """
-    calculate pixel number of specific RGB value range
-    """
-    pass
-
-
-def geo_to_cartesian(geo_coordinate, radius):
-    """
-    transform geographic coordinate to cartesian coordinate
-    """
-    pass
-
-
-def get_view_direction(position):
-    """ "
-    calculate view direction from 3d position to coordinate center
-    """
-    pass
-
-
-# def cmap(img, color_map=cv2.COLORMAP_HOT):
-#     """
-#     Apply 'HOT' color to a float image
-#     """
-#     return cv2.applyColorMap(image_float_to_uint8(img), color_map)
-
-
-def cmap(img, color_map=cv2.COLORMAP_VIRIDIS):
+def cmap(img, color_map=cv2.COLORMAP_BONE):
     return cv2.applyColorMap(image_float_to_uint8(img), color_map)
 
 
-def norm_cmap(img, color_map=cv2.COLORMAP_PLASMA):
-    img = cv2.applyColorMap(image_float_to_uint8_norm(img), color_map)
+def unc_cmap(img, color_map=cv2.COLORMAP_PLASMA):
+    img = cv2.applyColorMap(image_float_to_uint8(img / 0.25), color_map)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     return img
 
 
 def error_cmap(img, color_map=cv2.COLORMAP_BONE):
-    img = cv2.applyColorMap(image_float_to_uint8_norm_error(img), color_map)
+    img = cv2.applyColorMap(image_float_to_uint8(img), color_map)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     return img
 
 
-def depth_test_cmap(img, color_map=cv2.COLORMAP_BONE):
-    return cv2.applyColorMap(image_float_to_uint8_depth(img), color_map)
-
-
-# def depth_cmap(img, color_map=cv2.COLORMAP_VIRIDIS):
-#     """
-#     Apply 'VIRIDIS' color to a float image
-#     """
-#     return cv2.applyColorMap(image_float_to_uint8_norm(img), color_map)
-
-
-# def std_cmap(img, color_map=cv2.COLORMAP_VIRIDIS):
-#     """
-#     Apply 'VIRIDIS' color to a float image
-#     """
-#     return cv2.applyColorMap(image_float_to_uint8_norm(img), color_map)
+def depth_cmap(img, min, max, color_map=cv2.COLORMAP_BONE):
+    return cv2.applyColorMap(image_float_to_uint8_norm(img, min, max), color_map)
 
 
 def batched_index_select_nd(t, inds):
@@ -276,7 +193,7 @@ def unproj_map(width, height, f, c=None, device="cpu"):
     X = X.to(device=device) / float(f[0])
     Y = Y.to(device=device) / float(f[1])
     Z = torch.ones_like(X)
-    unproj = torch.stack((X, -Y, -Z), dim=-1)
+    unproj = torch.stack((X, Y, Z), dim=-1)
     unproj /= torch.norm(unproj, dim=-1).unsqueeze(-1)
     return unproj
 
@@ -336,25 +253,17 @@ def gen_rays(poses, width, height, focal, z_near, z_far, c=None, ndc=False):
 
 def coordinate_transformation(pose, format):
     """
-    transform camera coordinate to opengl format
+    transform camera coordinate to opencv format
     """
 
-    # _coord_trans_world = torch.tensor(
-    #     [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32
-    # )
-    _coord_trans_cam_opencv = torch.tensor(
-        [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=torch.float32
-    )
-    _coord_trans_cam_normal = torch.tensor(
-        [[0, 0, -1, 0], [-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=torch.float32
+    _coord_trans_normal_2_opencv = torch.tensor(
+        [[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 0], [0, 0, 0, 1]], dtype=torch.float32
     )
 
     if format == "opencv":
-        return torch.tensor(pose, dtype=torch.float32) @ _coord_trans_cam_opencv
-    elif format == "normal":
-        return torch.tensor(pose, dtype=torch.float32) @ _coord_trans_cam_normal
-    elif format == "opengl":
         return torch.tensor(pose, dtype=torch.float32)
+    elif format == "normal":
+        return torch.tensor(pose, dtype=torch.float32) @ _coord_trans_normal_2_opencv
 
 
 def generate_mask(uv):
@@ -577,11 +486,6 @@ def cal_ause(err_vec, uncert_vec):
 
 
 def calc_metrics(predict, gt):
-    # import matplotlib
-
-    # matplotlib.use("TkAgg")
-    # import matplotlib.pyplot as plt
-
     H, W, _ = gt.shape
     rgb = predict.rgb[0].cpu().reshape(H, W, 3)
     std = predict.uncertainty[0].cpu().reshape(H, W)
@@ -604,9 +508,6 @@ def calc_metrics(predict, gt):
     mean_mse = torch.mean(mse)  # mean over whole image
     mean_mae = torch.mean(mae)
 
-    # cosine_sim_var = cal_cosine_simularity(torch.flatten(mse), torch.flatten(variance))
-    # cosine_sim_std = cal_cosine_simularity(torch.flatten(mae), torch.flatten(std))
-
     normal_distribution = torch.distributions.normal.Normal(
         rgb.reshape(-1, 3), std.reshape(-1, 1)
     )
@@ -620,8 +521,6 @@ def calc_metrics(predict, gt):
         "ssim": ssim,
         "mean_mse": mean_mse,
         "mean_mae": mean_mae,
-        # "cosine_sim_var": cosine_sim_var,
-        # "cosine_sim_std": cosine_sim_std,
         "ause": ause,
         "nll": nll,
     }
@@ -644,8 +543,7 @@ def cal_cosine_simularity(v1, v2):
     return cos(v1, v2)
 
 
-def tb_visualizer(predict, gt, writer, H, W, i):
-
+def tb_visualizer(predict, gt, writer, H, W, z_near, z_far, i):
     if len(predict.rgb) > 0 and predict.rgb is not None:
         rgb_np = predict.rgb[0].cpu().numpy().reshape(H, W, 3)
         writer.add_image(
@@ -656,74 +554,45 @@ def tb_visualizer(predict, gt, writer, H, W, i):
         )
 
         error_np = np.abs(rgb_np - gt)
-
-        error_cmap = cmap(error_np)
+        error = error_cmap(error_np)
         writer.add_image(
             "predict/error",
-            error_cmap,
+            error,
             global_step=i,
             dataformats="HWC",
         )
 
     if len(predict.depth) > 0 and predict.depth is not None:
         depth_np = predict.depth[0].cpu().numpy().reshape(H, W)
-        depth_cmap = depth_test_cmap(depth_np)
+        depth = depth_cmap(depth_np, z_near, z_far)
         writer.add_image(
             "predict/depth",
-            depth_cmap,
+            depth,
             global_step=i,
             dataformats="HWC",
         )
-
-    # if len(predict.weights) > 0 and predict.weights is not None:
-    #     alpha_np = predict.weights[0].sum(dim=-1).cpu().numpy().reshape(H, W)
-    #     alpha_cmap = norm_cmap(alpha_np)
-    #     writer.add_image(
-    #         "predict/alpha",
-    #         alpha_cmap,
-    #         global_step=i,
-    #         dataformats="HWC",
-    #     )
 
     if len(predict.uncertainty) > 0 and predict.uncertainty is not None:
         uncertainty_np = predict.uncertainty[0].cpu().numpy().reshape(H, W)
-        uncertainty_cmap = norm_cmap(np.sqrt(np.exp(uncertainty_np)))
+        uncertainty = unc_cmap(uncertainty_np)
         writer.add_image(
             "predict/uncertainty",
-            uncertainty_cmap,
+            uncertainty,
             global_step=i,
             dataformats="HWC",
         )
 
-    if len(predict.confidence) > 0 and predict.confidence is not None:
-        confidence_np = predict.confidence[0].cpu().numpy().reshape(H, W)
-        confidence_cmap = cmap(confidence_np)
-        writer.add_image(
-            "predict/confidence",
-            confidence_cmap,
-            global_step=i,
-            dataformats="HWC",
-        )
-    if len(predict.depth_confidence) > 0 and predict.depth_confidence is not None:
-        depth_confidence_np = predict.depth_confidence[0].cpu().numpy().reshape(H, W)
-        depth_confidence_cmap = cmap(depth_confidence_np)
-        writer.add_image(
-            "predict/depth_confidence",
-            depth_confidence_cmap,
-            global_step=i,
-            dataformats="HWC",
-        )
     if len(predict.scaled_depth) > 0 and predict.scaled_depth is not None:
         scaled_depth_np = (
             predict.scaled_depth.squeeze(1).cpu().numpy().reshape(-1, H, W)
         )
-        scaled_depth_cmap = []
+        scaled_depth = []
         for k in range(scaled_depth_np.shape[0]):
-            scaled_depth_cmap.append(cmap(scaled_depth_np[k]))
+            scaled_depth.append(cmap(scaled_depth_np[k]))
 
         writer.add_images(
             "scaled_depth",
-            np.asarray(scaled_depth_cmap),
+            np.asarray(scaled_depth),
             global_step=i,
             dataformats="NHWC",
         )
