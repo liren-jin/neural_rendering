@@ -1,5 +1,4 @@
 network:
-  network_type: network5
   encoder:
     backbone: resnet34
     pretrained: true
@@ -12,7 +11,7 @@ network:
 
   mlp:
     mlp_feature:
-      d_latent: 256 # based on encoder layer number
+      d_latent: 256 
       d_feature: 128
       use_encoding: true
       use_view: true
@@ -24,14 +23,11 @@ network:
         freq_factor: 2
     
     mlp_output:
-      d_feature: 262
-      n_blocks: 2
+      d_feature: 256
+      block_num: 2
       d_out: 6
 
-
-
 renderer:
-  renderer_type : renderer5
   d_in: 256
   d_hidden: 128
   raymarch_steps: 16
