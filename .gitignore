@@ -12,6 +12,9 @@ checkpoints/
 experiment/
 visuals/
 logs/
+data/dataset/
+experiments/
+
 .env
 test.py
 *.csv
