@@ -93,17 +93,14 @@ class RayMarcher(nn.Module):
             z_far = rays[:, :, 7:8]
             z_scale = z_far - z_near
 
-            # start from near side
-            # depth = [z_near]
             scaled_depth = [0 * z_scale]  # scaled_depth should range from 0 -1
-            # sample_points = [rays[:, :, :3] + z_near * ray_dirs]  # (ON, RB, 3)
             sample_points = rays[:, :, :3] + z_near * ray_dirs  # (ON, RB, 3)
             states = [None]
 
             for _ in range(self.raymarch_steps):
                 with torch.no_grad():
                     # print("1", sample_points.shape)
-                    latent, p_feature, _ = network.get_features(
+                    latent, p_feature = network.get_features(
                         sample_points, ray_dirs
                     )  # (ON*RN*RB, d_latent)
 
@@ -128,7 +125,6 @@ class RayMarcher(nn.Module):
                 lstm_out = self.out_layer(state[0]).view(
                     ON, RB, self.lstm_d_out
                 )  # (ON, RB, 1)
-                # signed_distance = self.active(lstm_out)
                 signed_distance = lstm_out
                 depth_scaling = 1.0 / (1.0 * self.raymarch_steps)
                 signed_distance = depth_scaling * signed_distance
@@ -150,7 +146,7 @@ class _RenderWrapper(nn.Module):
         return outputs.toDict()
 
 
-class RMRenderer(nn.Module):
+class Renderer(nn.Module):
     def __init__(
         self,
         d_in,
@@ -182,7 +178,11 @@ class RMRenderer(nn.Module):
         with profiler.record_function("rendering"):
             assert len(rays.shape) == 3
 
-            (sample_points, depth_final, scaled_depth,) = self.ray_marcher(
+            (
+                sample_points,
+                depth_final,
+                scaled_depth,
+            ) = self.ray_marcher(
                 network, rays
             )  # (ON, RB, 3), (ON, RB, 1), (ON, RB, 1), (step, ON, RB, 1)
             render_dict = {
@@ -192,8 +192,8 @@ class RMRenderer(nn.Module):
 
             out = network(sample_points, rays[:, :, 3:6])  # (ON, RB, 4)
 
-            logit_mean = self.sigmoid(out[:, :, :3])  # (ON, RB, 3)
-            logit_log_var = self.sigmoid(out[:, :, 3:])  # (ON, RB , 3)
+            logit_mean = out[:, :, :3]  # (ON, RB, 3)
+            logit_log_var = out[:, :, 3:]  # (ON, RB , 3)
 
             render_dict["logit_mean"] = logit_mean
             render_dict["logit_log_var"] = logit_log_var
@@ -206,20 +206,6 @@ class RMRenderer(nn.Module):
                 rgb_std = torch.std(sampled_predictions, axis=0)
                 render_dict["rgb"] = rgb_mean
                 render_dict["uncertainty"] = torch.mean(rgb_std, dim=-1)
-
-            # if network.predict_uncertainty:
-            #     render_dict["rgb"] = rgbs_final
-            #     uncertainty = out[:, :, 3]  # (ON, RB)
-            #     render_dict["uncertainty"] = uncertainty
-
-            # elif network.predict_confidence:
-            #     render_dict["rgb"] = rgbs_final
-            #     confidence = out[:, :, 3]
-            #     render_dict["confidence"] = confidence
-
-            # if depth_confidence is not None:
-
-            #     render_dict["depth_confidence"] = depth_confidence
 
             return DotMap(render_dict)
 
