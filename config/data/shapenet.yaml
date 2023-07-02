@@ -1,4 +1,4 @@
-dtu: shapenet
+name: shapenet
 batch_size: 4
 shuffle: true
 num_workers: 0

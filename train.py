@@ -70,7 +70,7 @@ def main():
     network, renderer = get_model(cfg["model"])
     trainer = get_trainer(cfg["trainer"])
 
-    trainer.setup_training(datamodule, network, renderer, args.exp_name, args.resume)
+    trainer.setup_training(datamodule, network, renderer, args.model_name, args.resume)
     trainer.start()
 
 
@@ -87,13 +87,13 @@ def training_args(parser):
         required=True,
         help="unique model name",
     )
-    # arguments with default values
     parser.add_argument(
         "--setup_cfg_path",
         type=str,
-        default="config/setup.yaml",
+        required=True,
         help="path to experiment setup configuration",
     )
+    # arguments with default values
     parser.add_argument("--resume", action="store_true", help="continue training")
     return parser
 

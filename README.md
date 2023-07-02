@@ -6,19 +6,20 @@ conda env create -f environment.yaml
 conda activate neural_rendering
 ```
 
-## DTU Dataset
-download DTU dataset from https://drive.google.com/drive/folders/1PsT3uKwqHHD2bEEHkIXB99AlIjtmrEiR
+## Dataset
+- download DTU dataset and Shapenet dataset from https://drive.google.com/drive/folders/1PsT3uKwqHHD2bEEHkIXB99AlIjtmrEiR
+- modify the root path to downloaded dataset in the corresponding data configuration files under config/data folder
 
-copy lst files in lst folder to <data root>/rs_dtz_4/DTU folder
 
-## Train on DTU Dataset
+
+## Training
 for starting training process:
 ```commandline
-python train.py -M <model name>
+python train.py -M <model name> --setup_cfg_path <path to training setup file>
 ```
 continue traing:
 ```commandline
-python train.py -M <model name> --resume
+python train.py -M <model name> --setup_cfg_path <path to training setup file> --resume
 ```
 visualize training progress via:
 ``` commandline

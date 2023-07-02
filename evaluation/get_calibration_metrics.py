@@ -237,7 +237,7 @@ def calibration_args(parser):
         "--nviews", "-nv", type=int, default=3, help="number of reference views"
     )
     parser.add_argument(
-        "--repeat", "-rp", type=int, default=50, help="repeat number for each scene"
+        "--repeat", "-rp", type=int, default=100, help="repeat number for each scene"
     )
     parser.add_argument(
         "--need_visual_plot", action="store_true", help="whether plot output"
