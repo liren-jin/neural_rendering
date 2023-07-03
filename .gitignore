@@ -8,8 +8,6 @@ __pycache__/
 *.swp
 
 # Custom
-logs/**
-data/dataset/**
 experiments/
 
 .env
