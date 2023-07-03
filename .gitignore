@@ -8,15 +8,11 @@ __pycache__/
 *.swp
 
 # Custom
-checkpoints/
-experiment/
-visuals/
-logs/
-data/dataset/
+logs/**
+data/dataset/**
 experiments/
 
 .env
-test.py
 *.csv
 *.jpg
 *.png
