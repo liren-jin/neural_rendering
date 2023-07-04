@@ -7,17 +7,14 @@ conda activate neural_rendering
 ```
 
 ## Dataset
-- download DTU dataset and Shapenet dataset from https://drive.google.com/drive/folders/1PsT3uKwqHHD2bEEHkIXB99AlIjtmrEiR
-- modify the root path to downloaded dataset in the corresponding data configuration files under config/data folder
-
-
+- download DTU dataset and Shapenet dataset from https://drive.google.com/drive/folders/1PsT3uKwqHHD2bEEHkIXB99AlIjtmrEiR to data/dataset folder.
 
 ## Training
 for starting training process:
 ```commandline
 python train.py -M <model name> --setup_cfg_path <path to training setup file>
 ```
-continue traing:
+continue training:
 ```commandline
 python train.py -M <model name> --setup_cfg_path <path to training setup file> --resume
 ```

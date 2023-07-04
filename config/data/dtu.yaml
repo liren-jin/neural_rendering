@@ -4,7 +4,7 @@ shuffle: true
 num_workers: 0
 
 dataset:
-  data_rootdir: ../dataset/dtu_dataset/rs_dtu_4/DTU
+  data_rootdir: data/dataset/dtu_dataset/rs_dtu_4/DTU
   max_imgs: 49
   image_size: [300, 400] # H W
   z_near: 0.1

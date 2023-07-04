@@ -4,7 +4,7 @@ shuffle: true
 num_workers: 0
 
 dataset:
-  data_rootdir: ../dataset/shapenet
+  data_rootdir: data/dataset/shapenet
   image_size: [200, 200] # H W
   z_near: 0.1
   z_far: 4.0
