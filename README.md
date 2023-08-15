@@ -7,7 +7,7 @@ conda activate neural_rendering
 ```
 
 ## Dataset
-- download DTU dataset and Shapenet dataset from https://drive.google.com/drive/folders/1PsT3uKwqHHD2bEEHkIXB99AlIjtmrEiR to data/dataset folder.
+- download [DTU dataset](https://phenoroam.phenorob.de/file-uploader/download/public/953455041-dtu_dataset.zip) and [Shapenet dataset](https://phenoroam.phenorob.de/file-uploader/download/public/731944960-shapenet.zip) to data/dataset folder.
 
 ## Training
 for starting training process:
